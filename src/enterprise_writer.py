@@ -2,6 +2,8 @@ import xlsxwriter
 import pandas as pd
 import numpy as np
 import io
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 class EnterpriseExcelWriter:
     def __init__(self, vFilename, vThemeColour='#003366', vConfig=None):
@@ -18,9 +20,10 @@ class EnterpriseExcelWriter:
             
         self.vSheetList = []
         
-        # Internal tracking for Hidden Data (for charts)
+        # Internal tracking
         self.vHiddenSheet = None
         self.vHiddenRowCursor = 0
+        self.vUsedColumns = set() # NEW: Tracks all columns written to the report
         
         self.fNewSheet("Summary", "Report Overview")
         
@@ -107,6 +110,10 @@ class EnterpriseExcelWriter:
         else: dfPandas = dfInput
         
         vColumns = list(dfPandas.columns)
+        
+        # NEW: Track these columns so we can filter the dictionary later
+        self.vUsedColumns.update(vColumns)
+        
         vData = dfPandas.values.tolist()
         self.vLastDataInfo = {
             'start_row': self.vRowCursor + 1, 'end_row': self.vRowCursor + len(dfPandas),
@@ -205,28 +212,63 @@ class EnterpriseExcelWriter:
             self.vRowCursor += 22
 
     def fAddImageChart(self, vFigure, vRow=None, vCol=None):
-        """
-        Inserts a Matplotlib/Seaborn Figure as a static image.
-        """
-        # Save figure to in-memory buffer
         vImgData = io.BytesIO()
         vFigure.savefig(vImgData, format='png', bbox_inches='tight', dpi=100)
         vImgData.seek(0)
-        
         vInsertRow = vRow if vRow is not None else self.vRowCursor
         vInsertCol = vCol if vCol is not None else 1
-        
-        # Insert the image from memory
-        self.vWorksheet.insert_image(
-            vInsertRow, vInsertCol, 
-            "chart.png", # Dummy filename required by xlsxwriter
-            {'image_data': vImgData}
-        )
-        
-        # Advance cursor if not manually placed
+        self.vWorksheet.insert_image(vInsertRow, vInsertCol, "chart.png", {'image_data': vImgData})
         if vRow is None and vCol is None:
             self.vRowCursor += 22
-            
+
+    def fAddSeabornChart(self, dfInput, vXCol, vYCol, vTitle, vChartType='bar', vRow=None, vCol=None, vFigSize=(8, 4)):
+        """
+        Wrapper to generate a professional Seaborn chart and insert it as an image.
+        Auto-handles: Theme colour, Display names, Rotation, and Figure sizing.
+        """
+        # 1. Convert to Pandas if Spark
+        if "pyspark.sql.dataframe.DataFrame" in str(type(dfInput)): dfPandas = dfInput.toPandas()
+        else: dfPandas = dfInput.copy()
+
+        # 2. Setup Figure
+        plt.figure(figsize=vFigSize)
+        sns.set_style("whitegrid")
+        
+        # 3. Create Plot based on Type
+        if vChartType == 'bar':
+            vChart = sns.barplot(data=dfPandas, x=vXCol, y=vYCol, color=self.vThemeColour)
+        elif vChartType == 'line':
+            # sort=False keeps the original order of the dataframe (critical for month names)
+            vChart = sns.lineplot(data=dfPandas, x=vXCol, y=vYCol, color=self.vThemeColour, marker='o', sort=False)
+        elif vChartType == 'scatter':
+            vChart = sns.scatterplot(data=dfPandas, x=vXCol, y=vYCol, color=self.vThemeColour, s=100)
+        else:
+            # Fallback
+            vChart = sns.barplot(data=dfPandas, x=vXCol, y=vYCol, color=self.vThemeColour)
+
+        # 4. Polish - Titles & Labels
+        # Use Display Names if available
+        vXLabel = self.vColumnMap.get(vXCol, vXCol)
+        vYLabel = self.vColumnMap.get(vYCol, vYCol)
+        
+        vChart.set_title(vTitle, fontsize=14, color=self.vThemeColour, weight='bold', pad=20)
+        vChart.set_xlabel(vXLabel, fontsize=11, weight='bold')
+        vChart.set_ylabel(vYLabel, fontsize=11, weight='bold')
+
+        # 5. Auto-Rotate Labels (Polish)
+        # If X axis has many items or is text/object, rotate to prevent overlap
+        if len(dfPandas) > 6 or dfPandas[vXCol].dtype == 'object' or dfPandas[vXCol].dtype.name == 'category':
+            vChart.set_xticks(vChart.get_xticks()) # Fix ticks before setting labels to avoid warning
+            vChart.set_xticklabels(vChart.get_xticklabels(), rotation=45, horizontalalignment='right')
+        
+        # Ensure layout fits (fixes overlapping labels cut off)
+        plt.tight_layout()
+        
+        # 6. Insert
+        vFigure = vChart.get_figure()
+        self.fAddImageChart(vFigure, vRow, vCol)
+        plt.close(vFigure)
+
     def _fWriteHiddenData(self, dfInput):
         if self.vHiddenSheet is None:
             self.vHiddenSheet = self.vWorkbook.add_worksheet("Chart_Data")
@@ -260,6 +302,12 @@ class EnterpriseExcelWriter:
 
         if "pyspark.sql.dataframe.DataFrame" in str(type(dfInput)): dfPandas = dfInput.toPandas()
         else: dfPandas = dfInput
+        
+        # NEW: Filter Logic
+        # Only keep rows where 'column_name' has been seen in self.vUsedColumns
+        if 'column_name' in dfPandas.columns and self.vUsedColumns:
+            dfPandas = dfPandas[dfPandas['column_name'].isin(self.vUsedColumns)]
+        
         vData = dfPandas.values.tolist()
         vHeaders = ["Technical Name", "Business Name", "Definition"]
         
