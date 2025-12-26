@@ -4,6 +4,7 @@ import numpy as np
 import io
 import matplotlib.pyplot as plt
 import seaborn as sns
+import ast
 
 class EnterpriseExcelWriter:
     def __init__(self, vFilename, vThemeColour='#003366', vConfig=None):
@@ -23,7 +24,7 @@ class EnterpriseExcelWriter:
         # Internal tracking
         self.vHiddenSheet = None
         self.vHiddenRowCursor = 0
-        self.vUsedColumns = set() # NEW: Tracks all columns written to the report
+        self.vUsedColumns = set() # Tracks all columns written to the report for dict filtering
         
         self.fNewSheet("Summary", "Report Overview")
         
@@ -85,11 +86,108 @@ class EnterpriseExcelWriter:
         vHeaderConfig = self.vConfig.get('Header', {})
         vSize = int(vHeaderConfig.get('font_size', vFontSize))
         vColour = vHeaderConfig.get('font_colour', self.vThemeColour)
+        vBgColour = vHeaderConfig.get('bg_colour') # Check for configured background
         
-        vFmt = self.vWorkbook.add_format({'bold': True, 'font_size': vSize, 'font_color': vColour, 'font_name': 'Arial'})
+        vProps = {'bold': True, 'font_size': vSize, 'font_color': vColour, 'font_name': 'Arial', 'valign': 'vcenter'}
+        if vBgColour:
+            vProps['bg_color'] = vBgColour
+            vProps['border'] = 1
+            
+        vFmt = self.vWorkbook.add_format(vProps)
         self.vWorksheet.set_row(self.vRowCursor, vSize * 1.5)
-        self.vWorksheet.write(self.vRowCursor, 1, vTitleText, vFmt)
+        
+        # Smart Merge
+        vColsNeeded = int((len(vTitleText) * (vSize / 10.0)) / 7)
+        vEndCol = 1 + vColsNeeded
+        
+        if vEndCol > 1:
+            self.vWorksheet.merge_range(self.vRowCursor, 1, self.vRowCursor, vEndCol, vTitleText, vFmt)
+        else:
+            self.vWorksheet.write(self.vRowCursor, 1, vTitleText, vFmt)
+            
         self.vRowCursor += 2 
+
+    def fAddText(self, vText, vFontSize=10, vFontColour=None, vBold=False, vItalic=False, vBgColour=None, vAlign='left', vTextWrap=False):
+        """
+        Adds free-form text. Supports rich text if vText is a list of segments.
+        """
+        vProps = {
+            'font_name': 'Arial',
+            'font_size': vFontSize,
+            'bold': vBold,
+            'italic': vItalic,
+            'valign': 'vcenter',
+            'align': vAlign,
+            'text_wrap': vTextWrap
+        }
+        
+        if vFontColour: vProps['font_color'] = vFontColour
+        
+        if vBgColour:
+            vProps['bg_color'] = vBgColour
+            vProps['border'] = 1
+            
+        vFmt = self.vWorkbook.add_format(vProps)
+        
+        vIsRichText = isinstance(vText, list)
+        vRawText = ""
+        vFragments = []
+        
+        if vIsRichText:
+            # Create a format for plain text segments (font properties only)
+            vBaseProps = vProps.copy()
+            for k in ['bg_color', 'border', 'align', 'valign', 'text_wrap']:
+                vBaseProps.pop(k, None)
+            vBaseFontFmt = self.vWorkbook.add_format(vBaseProps)
+
+            for vSeg in vText:
+                if isinstance(vSeg, dict):
+                    vSegText = vSeg.get('text', '')
+                    vRawText += vSegText
+                    vSegProps = vProps.copy()
+                    if 'bold' in vSeg: vSegProps['bold'] = vSeg['bold']
+                    if 'italic' in vSeg: vSegProps['italic'] = vSeg['italic']
+                    if 'colour' in vSeg: vSegProps['font_color'] = vSeg['colour']
+                    if 'font_color' in vSeg: vSegProps['font_color'] = vSeg['font_color']
+                    if 'size' in vSeg: vSegProps['font_size'] = vSeg['size']
+                    
+                    for k in ['bg_color', 'border', 'align', 'valign', 'text_wrap']:
+                        vSegProps.pop(k, None)
+                    
+                    vFragments.append(self.vWorkbook.add_format(vSegProps))
+                    vFragments.append(vSegText)
+                else:
+                    vRawText += str(vSeg)
+                    vFragments.append(vBaseFontFmt)
+                    vFragments.append(str(vSeg))
+            
+            vFragments.append(vFmt)
+        else:
+            vRawText = vText
+
+        # Smart Merge Logic
+        if vBgColour or vAlign != 'left':
+            vColsNeeded = int((len(vRawText) * (vFontSize / 10.0)) / 7)
+            vEndCol = min(1 + vColsNeeded, 15)
+            
+            if vEndCol > 1:
+                if vIsRichText:
+                    self.vWorksheet.merge_range(self.vRowCursor, 1, self.vRowCursor, vEndCol, "", vFmt)
+                    self.vWorksheet.write_rich_string(self.vRowCursor, 1, *vFragments)
+                else:
+                    self.vWorksheet.merge_range(self.vRowCursor, 1, self.vRowCursor, vEndCol, vRawText, vFmt)
+            else:
+                if vIsRichText:
+                    self.vWorksheet.write_rich_string(self.vRowCursor, 1, *vFragments)
+                else:
+                    self.vWorksheet.write(self.vRowCursor, 1, vRawText, vFmt)
+        else:
+            if vIsRichText:
+                self.vWorksheet.write_rich_string(self.vRowCursor, 1, *vFragments)
+            else:
+                self.vWorksheet.write(self.vRowCursor, 1, vRawText, vFmt)
+            
+        self.vRowCursor += 1
 
     def fAddWatermark(self, vImagePath):
         try: self.vWorksheet.set_background(vImagePath)
@@ -110,8 +208,6 @@ class EnterpriseExcelWriter:
         else: dfPandas = dfInput
         
         vColumns = list(dfPandas.columns)
-        
-        # NEW: Track these columns so we can filter the dictionary later
         self.vUsedColumns.update(vColumns)
         
         vData = dfPandas.values.tolist()
@@ -121,7 +217,6 @@ class EnterpriseExcelWriter:
             'sheet_name': self.vWorksheet.get_name()
         }
 
-        # Write Headers
         self.vWorksheet.set_row(self.vRowCursor, 20) 
         for vIdx, vColName in enumerate(vColumns):
             vDisplayName = self.vColumnMap.get(vColName, vColName)
@@ -129,7 +224,6 @@ class EnterpriseExcelWriter:
             vMaxLen = dfPandas[vColName].astype(str).map(len).max() if not dfPandas.empty else 0
             self.vWorksheet.set_column(vStartCol + vIdx, vStartCol + vIdx, min(max(len(vDisplayName), vMaxLen) + 2, 50))
 
-        # Write Data
         vCurrentRow = self.vRowCursor + 1
         vNumFmts = {'currency': self.vWorkbook.add_format({'num_format': '$#,##0.00', 'border': 1}),
                     'percent': self.vWorkbook.add_format({'num_format': '0.0%', 'border': 1}),
@@ -157,13 +251,87 @@ class EnterpriseExcelWriter:
             self.vRowCursor += 2
         else: self.vRowCursor += 1
 
-    def fAddConditionalFormat(self, vColName, vRuleType, vCriteria, vColor="#FF9999"):
+    def fWriteRichDataframe(self, dfInput, vStartCol=1):
+        """
+        Writes a dataframe cell-by-cell to support Rich Text lists.
+        Attempts to parse stringified lists (e.g. from DB) into actual lists.
+        """
+        if "pyspark.sql.dataframe.DataFrame" in str(type(dfInput)): dfPandas = dfInput.toPandas()
+        else: dfPandas = dfInput
+        
+        vColumns = list(dfPandas.columns)
+        self.vUsedColumns.update(vColumns)
+        
+        vData = dfPandas.values.tolist()
+        self.vLastDataInfo = {
+            'start_row': self.vRowCursor + 1, 'end_row': self.vRowCursor + len(dfPandas),
+            'start_col': vStartCol, 'columns': {name: vStartCol + i for i, name in enumerate(vColumns)},
+            'sheet_name': self.vWorksheet.get_name()
+        }
+
+        self.vWorksheet.set_row(self.vRowCursor, 20)
+        for vIdx, vColName in enumerate(vColumns):
+            vDisplayName = self.vColumnMap.get(vColName, vColName)
+            self.vWorksheet.write(self.vRowCursor, vStartCol + vIdx, vDisplayName, self.fmtHeader)
+            vMaxLen = dfPandas[vColName].astype(str).map(len).max() if not dfPandas.empty else 0
+            self.vWorksheet.set_column(vStartCol + vIdx, vStartCol + vIdx, min(max(len(vDisplayName), vMaxLen) + 2, 50))
+
+        vCurrentRow = self.vRowCursor + 1
+        vBaseFontFmt = self.vWorkbook.add_format({'font_name': 'Arial', 'font_size': 10})
+        vNumFmts = {'currency': self.vWorkbook.add_format({'num_format': '$#,##0.00', 'border': 1}),
+                    'percent': self.vWorkbook.add_format({'num_format': '0.0%', 'border': 1}),
+                    'int': self.vWorkbook.add_format({'num_format': '#,##0', 'border': 1})}
+
+        for vRowIdx, vRowData in enumerate(vData):
+            for vColIdx, vVal in enumerate(vRowData):
+                vTargetRow = vCurrentRow + vRowIdx
+                vTargetCol = vStartCol + vColIdx
+                vColName = vColumns[vColIdx]
+                vCellFmt = self.vWorkbook.add_format(self.fmtCellBase.copy())
+                vCellFmt.set_text_wrap(True)
+
+                # Try to parse stringified lists from Database
+                if isinstance(vVal, str) and vVal.strip().startswith('[') and vVal.strip().endswith(']'):
+                    try:
+                        vParsed = ast.literal_eval(vVal)
+                        if isinstance(vParsed, list):
+                            vVal = vParsed
+                    except:
+                        pass # Treat as normal string if parsing fails
+
+                if isinstance(vVal, list):
+                    vFragments = []
+                    for vSeg in vVal:
+                        if isinstance(vSeg, dict):
+                            vSegText = vSeg.get('text', '')
+                            vSegProps = {'font_name': 'Arial', 'font_size': 10}
+                            if 'bold' in vSeg: vSegProps['bold'] = vSeg['bold']
+                            if 'italic' in vSeg: vSegProps['italic'] = vSeg['italic']
+                            if 'colour' in vSeg: vSegProps['font_color'] = vSeg['colour']
+                            vFragments.append(self.vWorkbook.add_format(vSegProps))
+                            vFragments.append(vSegText)
+                        else:
+                            vFragments.append(vBaseFontFmt)
+                            vFragments.append(str(vSeg))
+                    vFragments.append(vCellFmt)
+                    self.vWorksheet.write_rich_string(vTargetRow, vTargetCol, *vFragments)
+                else:
+                    vFmt = vCellFmt
+                    if isinstance(vVal, (int, float)):
+                        if any(x in vColName for x in ["price", "cost", "revenue"]): vFmt = vNumFmts['currency']
+                        elif any(x in vColName for x in ["percent", "rate"]): vFmt = vNumFmts['percent']
+                        else: vFmt = vNumFmts['int']
+                    self.vWorksheet.write(vTargetRow, vTargetCol, vVal, vFmt)
+
+        self.vRowCursor += len(dfPandas) + 1
+
+    def fAddConditionalFormat(self, vColName, vRuleType, vCriteria, vColour="#FF9999"):
         vMeta = self.vLastDataInfo
         if not vMeta: return
         vColIdx = vMeta['columns'].get(vColName)
         if vColIdx is None: return
         vRange = [vMeta['start_row'], vColIdx, vMeta['end_row'], vColIdx]
-        vProps = {'type': vRuleType, 'format': self.vWorkbook.add_format({'bg_color': vColor, 'font_color': '#9C0006'})}
+        vProps = {'type': vRuleType, 'format': self.vWorkbook.add_format({'bg_color': vColour, 'font_color': '#9C0006'})}
         vProps.update(vCriteria)
         self.vWorksheet.conditional_format(*vRange, vProps)
 
@@ -222,49 +390,32 @@ class EnterpriseExcelWriter:
             self.vRowCursor += 22
 
     def fAddSeabornChart(self, dfInput, vXCol, vYCol, vTitle, vChartType='bar', vRow=None, vCol=None, vFigSize=(8, 4)):
-        """
-        Wrapper to generate a professional Seaborn chart and insert it as an image.
-        Auto-handles: Theme colour, Display names, Rotation, and Figure sizing.
-        """
-        # 1. Convert to Pandas if Spark
         if "pyspark.sql.dataframe.DataFrame" in str(type(dfInput)): dfPandas = dfInput.toPandas()
         else: dfPandas = dfInput.copy()
 
-        # 2. Setup Figure
         plt.figure(figsize=vFigSize)
         sns.set_style("whitegrid")
         
-        # 3. Create Plot based on Type
         if vChartType == 'bar':
             vChart = sns.barplot(data=dfPandas, x=vXCol, y=vYCol, color=self.vThemeColour)
         elif vChartType == 'line':
-            # sort=False keeps the original order of the dataframe (critical for month names)
             vChart = sns.lineplot(data=dfPandas, x=vXCol, y=vYCol, color=self.vThemeColour, marker='o', sort=False)
         elif vChartType == 'scatter':
             vChart = sns.scatterplot(data=dfPandas, x=vXCol, y=vYCol, color=self.vThemeColour, s=100)
         else:
-            # Fallback
             vChart = sns.barplot(data=dfPandas, x=vXCol, y=vYCol, color=self.vThemeColour)
 
-        # 4. Polish - Titles & Labels
-        # Use Display Names if available
         vXLabel = self.vColumnMap.get(vXCol, vXCol)
         vYLabel = self.vColumnMap.get(vYCol, vYCol)
-        
         vChart.set_title(vTitle, fontsize=14, color=self.vThemeColour, weight='bold', pad=20)
         vChart.set_xlabel(vXLabel, fontsize=11, weight='bold')
         vChart.set_ylabel(vYLabel, fontsize=11, weight='bold')
 
-        # 5. Auto-Rotate Labels (Polish)
-        # If X axis has many items or is text/object, rotate to prevent overlap
         if len(dfPandas) > 6 or dfPandas[vXCol].dtype == 'object' or dfPandas[vXCol].dtype.name == 'category':
-            vChart.set_xticks(vChart.get_xticks()) # Fix ticks before setting labels to avoid warning
+            vChart.set_xticks(vChart.get_xticks()) 
             vChart.set_xticklabels(vChart.get_xticklabels(), rotation=45, horizontalalignment='right')
         
-        # Ensure layout fits (fixes overlapping labels cut off)
         plt.tight_layout()
-        
-        # 6. Insert
         vFigure = vChart.get_figure()
         self.fAddImageChart(vFigure, vRow, vCol)
         plt.close(vFigure)
@@ -291,22 +442,31 @@ class EnterpriseExcelWriter:
         self.vHiddenRowCursor += len(dfPandas) + 2
         return vMeta
 
+    def fFilterDataDictionary(self, dfInput, vColName='column_name'):
+        """
+        Returns a filtered version of the data dictionary containing only 
+        columns that have been written to the report so far.
+        """
+        if "pyspark.sql.dataframe.DataFrame" in str(type(dfInput)): 
+            dfPandas = dfInput.toPandas()
+        else: 
+            dfPandas = dfInput.copy()
+            
+        if vColName in dfPandas.columns and self.vUsedColumns:
+            return dfPandas[dfPandas[vColName].isin(self.vUsedColumns)]
+            
+        return dfPandas
+
     def fAddDataDictionary(self, dfInput, vStartCol=1):
         vDictConfig = self.vConfig.get('DataDict', {})
         vHeaderBg = vDictConfig.get('header_bg_colour', self.vThemeColour)
-        
         fmtDictHeader = self.vWorkbook.add_format({
             'bold': True, 'font_color': 'white', 'bg_color': vHeaderBg,
             'border': 1, 'align': 'center', 'valign': 'vcenter', 'font_name': 'Arial', 'font_size': 10
         })
-
-        if "pyspark.sql.dataframe.DataFrame" in str(type(dfInput)): dfPandas = dfInput.toPandas()
-        else: dfPandas = dfInput
         
-        # NEW: Filter Logic
-        # Only keep rows where 'column_name' has been seen in self.vUsedColumns
-        if 'column_name' in dfPandas.columns and self.vUsedColumns:
-            dfPandas = dfPandas[dfPandas['column_name'].isin(self.vUsedColumns)]
+        # Use new helper to filter input before writing
+        dfPandas = self.fFilterDataDictionary(dfInput)
         
         vData = dfPandas.values.tolist()
         vHeaders = ["Technical Name", "Business Name", "Definition"]
