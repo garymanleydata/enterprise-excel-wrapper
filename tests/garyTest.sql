@@ -55,3 +55,23 @@ INSERT INTO report_config (profile_name, component, setting_key, setting_value)
 VALUES 
     ('GaryTest', 'DataDict', 'header_bg_colour', '#000000'), -- Distinct Black Header
     ('GaryTest', 'DataDict', 'header_font_colour', '#FFFFFF');
+	
+COMMIT;
+
+-- 1. Global: Hide Gridlines (2 = Hide on screen and print)
+INSERT INTO report_config (profile_name, component, setting_key, setting_value)
+VALUES ('GaryTest', 'Global', 'hide_gridlines', '2');
+
+-- 2. Global: Default Date Format (UK Standard)
+INSERT INTO report_config (profile_name, component, setting_key, setting_value)
+VALUES ('GaryTest', 'Global', 'default_date_format', 'dd/mm/yyyy');
+
+-- 1. Guidance Component (Standard Grey Background for definitions)
+INSERT INTO report_config (profile_name, component, setting_key, setting_value)
+VALUES ('GaryTest', 'Guidance', 'bg_colour', '#E8EDEE');
+
+-- 2. Warning Component (Blue Background, White Text for Confidential Banners)
+INSERT INTO report_config (profile_name, component, setting_key, setting_value)
+VALUES 
+    ('GaryTest', 'Warning', 'bg_colour', '#0091C9'),
+    ('GaryTest', 'Warning', 'font_colour', '#FFFFFF');
