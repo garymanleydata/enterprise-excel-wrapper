@@ -28,7 +28,7 @@ class EnterpriseExcelWriter:
         # Internal tracking
         self.vHiddenSheet = None
         self.vHiddenRowCursor = 0
-        self.vUsedColumns = set() 
+        self.vUsedColumns = set() # Tracks all columns written to the report for dict filtering
         
         self.fNewSheet("Summary", "Report Overview")
         
@@ -285,9 +285,10 @@ class EnterpriseExcelWriter:
             vStartCol += 3 
         self.vRowCursor += 4 
 
-    def fWriteDataframe(self, dfInput, vStartCol=1, vAddTotals=False, vAutoFilter=False):
+    def fWriteDataframe(self, dfInput, vStartCol=1, vAddTotals=False, vAutoFilter=False, vStyleOverrides=None):
         """
         Writes a Pandas DataFrame to the sheet with Validation and Auto-Formatting.
+        Supports vStyleOverrides dictionary: {'header_bg': '#Color', 'font_size': 10, 'border_color': '#Color'}
         """
         # 1. Validation: Empty Data
         if dfInput.empty:
@@ -299,7 +300,7 @@ class EnterpriseExcelWriter:
             self.vRowCursor += 4
             return
 
-        # 2. Validation: Cell Limits (check object columns only for speed)
+        # 2. Validation: Cell Limits
         vObjCols = dfInput.select_dtypes(include=['object'])
         if not vObjCols.empty:
             vMaxLen = vObjCols.astype(str).map(len).max().max()
@@ -309,6 +310,26 @@ class EnterpriseExcelWriter:
         vColumns = list(dfInput.columns)
         self.vUsedColumns.update(vColumns)
         
+        # --- NEW: STYLE OVERRIDES ---
+        vStyles = vStyleOverrides or {}
+        vHeaderBg = vStyles.get('header_bg', self.vThemeColour)
+        vHeaderFont = vStyles.get('header_font', 'white')
+        vBodySize = vStyles.get('font_size', 10)
+        vBorderColor = vStyles.get('border_color', '#000000')
+
+        # Create Custom Formats for this specific table
+        fmtHeaderCustom = self.vWorkbook.add_format({
+            'bold': True, 'font_color': vHeaderFont, 'bg_color': vHeaderBg,
+            'border': 1, 'border_color': vBorderColor, 
+            'align': 'center', 'valign': 'vcenter', 'font_name': 'Arial', 'font_size': vBodySize
+        })
+        
+        fmtTextCustom = self.vWorkbook.add_format({
+            'border': 1, 'border_color': vBorderColor, 
+            'valign': 'vcenter', 'font_name': 'Arial', 'font_size': vBodySize
+        })
+        # -----------------------------
+
         vData = dfInput.values.tolist()
         self.vLastDataInfo = {
             'start_row': self.vRowCursor + 1, 'end_row': self.vRowCursor + len(dfInput),
@@ -321,34 +342,41 @@ class EnterpriseExcelWriter:
         self.vWorksheet.set_row(self.vRowCursor, 20) 
         for vIdx, vColName in enumerate(vColumns):
             vDisplayName = self.vColumnMap.get(vColName, vColName)
-            self.vWorksheet.write(self.vRowCursor, vStartCol + vIdx, vDisplayName, self.fmtHeader)
+            # USE CUSTOM HEADER FORMAT
+            self.vWorksheet.write(self.vRowCursor, vStartCol + vIdx, vDisplayName, fmtHeaderCustom)
             vMaxLen = dfInput[vColName].astype(str).map(len).max() if not dfInput.empty else 0
             self.vWorksheet.set_column(vStartCol + vIdx, vStartCol + vIdx, min(max(len(vDisplayName), vMaxLen) + 2, 50))
 
-        # AutoFilter Application
         if vAutoFilter:
             self.vWorksheet.autofilter(self.vRowCursor, vStartCol, self.vRowCursor + len(dfInput), vStartCol + len(vColumns) - 1)
 
         vCurrentRow = self.vRowCursor + 1
         
-        vNumFmts = {'currency': self.vWorkbook.add_format({'num_format': '$#,##0.00', 'border': 1}),
-                    'percent': self.vWorkbook.add_format({'num_format': '0.0%', 'border': 1}),
-                    'int': self.vWorkbook.add_format({'num_format': '#,##0', 'border': 1})}
+        # Update Number Formats to respect new Border Colors
+        def fGetNumFmt(sFmt):
+             return self.vWorkbook.add_format({'num_format': sFmt, 'border': 1, 'border_color': vBorderColor, 'font_size': vBodySize, 'font_name': 'Arial'})
+
+        vNumFmts = {
+            'currency': fGetNumFmt('$#,##0.00'),
+            'percent': fGetNumFmt('0.0%'),
+            'int': fGetNumFmt('#,##0')
+        }
         
         vDateFmt = self.vWorkbook.add_format({
             'num_format': self.vDateFormatStr, 
-            'border': 1, 'align': 'left', 'valign': 'vcenter', 'font_name': 'Arial', 'font_size': 10
+            'border': 1, 'border_color': vBorderColor, 
+            'align': 'left', 'valign': 'vcenter', 'font_name': 'Arial', 'font_size': vBodySize
         })
         
         for vRowIdx, vRowData in enumerate(vData):
             for vColIdx, vVal in enumerate(vRowData):
                 vColName = vColumns[vColIdx]
-                vFmt = self.fmtText
+                vFmt = fmtTextCustom # USE CUSTOM TEXT FORMAT
                 
                 # Priority 1: Custom Format from Config
                 vCustomFmtStr = self.vColumnFormats.get(vColName)
                 if vCustomFmtStr:
-                    vFmt = self.vWorkbook.add_format({'num_format': vCustomFmtStr, 'border': 1, 'font_name': 'Arial', 'font_size': 10})
+                    vFmt = fGetNumFmt(vCustomFmtStr)
                 
                 # Priority 2: Date
                 elif vColIdx in vDateColIndices:
@@ -362,7 +390,9 @@ class EnterpriseExcelWriter:
                 
                 # Priority 4: Hyperlinks
                 elif isinstance(vVal, str) and re.match(r'^(http|https|ftp|mailto):', vVal):
-                    vFmt = self.fmtLink
+                    # We reuse the link format but might lose custom borders here unless updated globally
+                    # For now, keep standard link format to ensure it looks clickable
+                    vFmt = self.fmtLink 
                     self.vWorksheet.write_url(vCurrentRow + vRowIdx, vStartCol + vColIdx, vVal, vFmt)
                     continue 
                     
@@ -371,50 +401,45 @@ class EnterpriseExcelWriter:
         self.vRowCursor += len(dfInput) + 1
         
         if vAddTotals:
-            self.vWorksheet.write(self.vRowCursor, vStartCol, "Total", self.fmtTotalRow)
+            # Update Total Row Format
+            fmtTotalCustom = self.vWorkbook.add_format({
+                'bold': True, 'bg_color': '#E0E0E0', 'border': 1, 'border_color': vBorderColor,
+                'num_format': '#,##0', 'font_name': 'Arial', 'font_size': vBodySize
+            })
+            self.vWorksheet.write(self.vRowCursor, vStartCol, "Total", fmtTotalCustom)
             
             for vIdx, vColName in enumerate(vColumns):
                 if vIdx == 0: continue 
                 
-                # Only process numeric columns
                 if pd.api.types.is_numeric_dtype(dfInput[vColName]):
-                    
-                    # 1. Skip percentages
                     is_percent_col = False
                     if any(x in vColName.lower() for x in ["percent", "rate", "efficiency", "score"]): is_percent_col = True
-                    
                     vCustomFmt = self.vColumnFormats.get(vColName)
                     if vCustomFmt and '%' in vCustomFmt: is_percent_col = True
                     
                     if is_percent_col:
-                        self.vWorksheet.write(self.vRowCursor, vStartCol + vIdx, "", self.fmtTotalRow)
+                        self.vWorksheet.write(self.vRowCursor, vStartCol + vIdx, "", fmtTotalCustom)
                         continue
 
-                    # 2. Determine Format & Pre-calculate Python Sum
                     vPySum = dfInput[vColName].sum()
                     
                     vFmtStr = '#,##0' 
-                    if vCustomFmt:
-                        vFmtStr = vCustomFmt
-                    elif any(x in vColName.lower() for x in ["price", "cost", "revenue"]): 
-                        vFmtStr = '$#,##0.00'
-                    elif any(x in vColName.lower() for x in ["weight", "dist", "km", "miles"]): 
-                        vFmtStr = '#,##0.0'
+                    if vCustomFmt: vFmtStr = vCustomFmt
+                    elif any(x in vColName.lower() for x in ["price", "cost", "revenue"]): vFmtStr = '$#,##0.00'
+                    elif any(x in vColName.lower() for x in ["weight", "dist", "km", "miles"]): vFmtStr = '#,##0.0'
                         
                     vColTotalFmt = self.vWorkbook.add_format({
-                        'bold': True, 'bg_color': '#E0E0E0', 'border': 1, 
-                        'font_name': 'Arial', 'font_size': 10,
+                        'bold': True, 'bg_color': '#E0E0E0', 'border': 1, 'border_color': vBorderColor,
+                        'font_name': 'Arial', 'font_size': vBodySize,
                         'num_format': vFmtStr
                     })
 
-                    # 3. Write Formula with Value override
                     vColLetter = xlsxwriter.utility.xl_col_to_name(vStartCol + vIdx)
                     vRange = f"{vColLetter}{vCurrentRow+1}:{vColLetter}{vCurrentRow+len(dfInput)}"
                     
-                    # Passing 'value' ensures it displays correct number immediately
                     self.vWorksheet.write_formula(self.vRowCursor, vStartCol + vIdx, f"=SUM({vRange})", vColTotalFmt, value=vPySum)
                 else:
-                    self.vWorksheet.write(self.vRowCursor, vStartCol + vIdx, "", self.fmtTotalRow)
+                    self.vWorksheet.write(self.vRowCursor, vStartCol + vIdx, "", fmtTotalCustom)
             
             self.vRowCursor += 2
         else: self.vRowCursor += 1
