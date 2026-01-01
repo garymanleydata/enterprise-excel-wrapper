@@ -42,3 +42,26 @@ def fGetRunbyMonth():
     dfRun = pd.read_sql(vQuery, vConnection)
     vConnection.close()
     return dfRun
+
+def fGetparkrunByYear():
+    vConnection = fGetDbConnection()
+    vQuery = """select 	substr(RunDate, -4) AS RunYear, 
+		            count(*) TotalRuns, 
+		            min(pos) LowestPos, 
+		            min(ProcessedTime) FastestTime
+                from parkrunResult d
+                group by substr(RunDate, -4)
+                order by 1"""
+    dfRun = pd.read_sql(vQuery, vConnection)
+    vConnection.close()
+    return dfRun
+
+def fGetparkrunKpis():
+    vConnection = fGetDbConnection()
+    vQuery = """select 	count(*) TotalRuns, 
+		            min(pos) LowestPos, 
+		            min(ProcessedTime) FastestTime
+                from parkrunResult d"""
+    dfRun = pd.read_sql(vQuery, vConnection)
+    vConnection.close()
+    return dfRun
