@@ -69,9 +69,6 @@ class EnterpriseExcelWriter:
 
     # --- Helper Validation Methods ---
     def _fValidateColumns(self, dfInput, vRequiredCols, vContext="Operation"):
-        """
-        Internal validation to ensure columns exist before attempting operations.
-        """
         vMissing = [col for col in vRequiredCols if col not in dfInput.columns]
         if vMissing:
             raise ValueError(
@@ -80,21 +77,15 @@ class EnterpriseExcelWriter:
             )
 
     def _fValidateSheetName(self, vSheetName):
-        """
-        Validates Excel sheet naming rules. Raises ValueError if invalid.
-        """
         if len(vSheetName) > 31:
             raise ValueError(f"Sheet Name Error: '{vSheetName}' exceeds 31 characters limit.")
-        
         if re.search(r'[\[\]:*?/\\]', vSheetName):
             raise ValueError(f"Sheet Name Error: '{vSheetName}' contains invalid characters ([ ] : * ? / \\).")
 
     # --- Core Methods ---
 
     def fNewSheet(self, vSheetName, vDescription=""):
-        # Validate name before creating
         self._fValidateSheetName(vSheetName)
-        
         self.vWorksheet = self.vWorkbook.add_worksheet(vSheetName)
         self.vRowCursor = 1
         self.vSheetList.append({'name': vSheetName, 'desc': vDescription})
@@ -104,24 +95,14 @@ class EnterpriseExcelWriter:
             self.vWorksheet.hide_gridlines(2)
 
     def fSetColumnMapping(self, dfDict):
-        """
-        Ingests data dictionary. Maps 'column_name' -> 'display_name' and 'excel_format' (if exists).
-        """
         if "pandas.core.frame.DataFrame" in str(type(dfDict)):
             if 'display_name' in dfDict.columns:
                 self.vColumnMap = pd.Series(dfDict.display_name.values, index=dfDict.column_name.values).to_dict()
-            
-            # Phase 2: Custom Number Formats
             if 'excel_format' in dfDict.columns:
-                # Only keep non-null formats
                 dfFmts = dfDict.dropna(subset=['excel_format'])
                 self.vColumnFormats = pd.Series(dfFmts.excel_format.values, index=dfFmts.column_name.values).to_dict()
 
     def fFreezePanes(self, vRow=1, vCol=0):
-        """
-        Freezes panes at the specified row and column. 
-        Example: (1, 0) freezes the top header row.
-        """
         self.vWorksheet.freeze_panes(vRow, vCol)
 
     def fSkipRows(self, vNumRows=1):
@@ -287,8 +268,26 @@ class EnterpriseExcelWriter:
         try: self.vWorksheet.set_background(vImagePath)
         except: pass
 
-    def fAddKpiRow(self, vKpiDict, vStartCol=None):
+    def fAddKpiRow(self, vKpiInput, vStartCol=None):
+        """
+        Adds a row of KPI cards.
+        vKpiInput: Dictionary {'Label': 'Value'} or a single-row DataFrame.
+        """
         vUseCol = vStartCol if vStartCol is not None else self.vGlobalStartCol
+        
+        # Handle DataFrame Input
+        vKpiDict = {}
+        if "pandas.core.frame.DataFrame" in str(type(vKpiInput)):
+            if vKpiInput.empty:
+                return
+            # Convert first row to dictionary
+            vKpiDict = vKpiInput.iloc[0].to_dict()
+        elif isinstance(vKpiInput, dict):
+            vKpiDict = vKpiInput
+        else:
+            print("Warning: fAddKpiRow expects a Dictionary or DataFrame.")
+            return
+
         self.vWorksheet.set_row(self.vRowCursor, 20)
         self.vWorksheet.set_row(self.vRowCursor + 1, 30)
         
@@ -338,7 +337,6 @@ class EnterpriseExcelWriter:
         vColumns = list(dfInput.columns)
         self.vUsedColumns.update(vColumns)
         
-        # --- STYLE OVERRIDES ---
         vStyles = vStyleOverrides or {}
         vHeaderBg = vStyles.get('header_bg', self.vThemeColour)
         vHeaderFont = vStyles.get('header_font', 'white')
@@ -379,7 +377,6 @@ class EnterpriseExcelWriter:
 
         vCurrentRow = self.vRowCursor + 1
         
-        # Format Cache for Alignment combos
         vFmtCache = {}
         
         def fGetFmt(sNumFmt=None, sAlign=None):
@@ -402,10 +399,9 @@ class EnterpriseExcelWriter:
                 vColName = vColumns[vColIdx]
                 vAlign = vColAlignments.get(vColName)
                 
-                vFmt = fGetFmt(None, vAlign) # Default text format with optional align
+                vFmt = fGetFmt(None, vAlign) 
                 
                 vCustomFmtStr = self.vColumnFormats.get(vColName)
-                
                 if vCustomFmtStr:
                     vFmt = fGetFmt(vCustomFmtStr, vAlign)
                 elif vColIdx in vDateColIndices:
@@ -416,8 +412,6 @@ class EnterpriseExcelWriter:
                     else: vFmtStr = '#,##0'
                     vFmt = fGetFmt(vFmtStr, vAlign)
                 elif isinstance(vVal, str) and re.match(r'^(http|https|ftp|mailto):', vVal):
-                    # For hyperlinks, creating a cached format might break global link style consistency if not careful
-                    # But we need alignment. We create a new format based on link style.
                     vLinkProps = {
                         'font_color': 'blue', 'underline': 1, 'font_name': 'Arial', 'font_size': 10,
                         'border': 1, 'valign': 'vcenter'
