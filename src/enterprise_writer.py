@@ -9,7 +9,7 @@ import re
 import math
 
 class EnterpriseExcelWriter:
-    def __init__(self, vFilename, vThemeColour='#003366', vConfig=None, vDefaultSheetName="Summary", vGlobalStartCol=1):
+    def __init__(self, vFilename, vThemeColour='#003366', vConfig=None, vDefaultSheetName="Summary", vDefaultSheetDescription="Report Overview", vGlobalStartCol=1):
         """
         vGlobalStartCol: 0 for Column A, 1 for Column B (default).
         """
@@ -35,7 +35,7 @@ class EnterpriseExcelWriter:
         self.vHiddenRowCursor = 0
         self.vUsedColumns = set() 
         
-        self.fNewSheet(vDefaultSheetName, "Report Overview")
+        self.fNewSheet(vDefaultSheetName, vDefaultSheetDescription)
         
         # --- Formats ---
         self.fmtHeader = self.vWorkbook.add_format({
