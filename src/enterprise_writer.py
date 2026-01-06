@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import ast
 import re
+import math
 
 class EnterpriseExcelWriter:
     def __init__(self, vFilename, vThemeColour='#003366', vConfig=None, vDefaultSheetName="Summary", vGlobalStartCol=1):
@@ -69,6 +70,9 @@ class EnterpriseExcelWriter:
 
     # --- Helper Validation Methods ---
     def _fValidateColumns(self, dfInput, vRequiredCols, vContext="Operation"):
+        """
+        Internal validation to ensure columns exist before attempting operations.
+        """
         vMissing = [col for col in vRequiredCols if col not in dfInput.columns]
         if vMissing:
             raise ValueError(
@@ -77,15 +81,35 @@ class EnterpriseExcelWriter:
             )
 
     def _fValidateSheetName(self, vSheetName):
+        """
+        Validates Excel sheet naming rules. Raises ValueError if invalid.
+        """
         if len(vSheetName) > 31:
             raise ValueError(f"Sheet Name Error: '{vSheetName}' exceeds 31 characters limit.")
+        
         if re.search(r'[\[\]:*?/\\]', vSheetName):
             raise ValueError(f"Sheet Name Error: '{vSheetName}' contains invalid characters ([ ] : * ? / \\).")
+            
+    def _fCalcRowHeight(self, vText, vFontSize, vMergeCols):
+        """
+        Heuristic to calculate row height for wrapped text in merged cells.
+        Excel does not auto-fit merged cells.
+        Assumes approx 8 chars per column width for standard font.
+        """
+        if not vText or vMergeCols < 1: return None
+        vCharsPerCol = 8.0 * (10.0 / vFontSize) # Adjust for font size
+        vTotalCapacity = vCharsPerCol * vMergeCols
+        vLines = math.ceil(len(str(vText)) / vTotalCapacity)
+        if vLines > 1:
+            return vLines * (vFontSize * 1.5) # 1.5 is rough line-height factor
+        return None
 
     # --- Core Methods ---
 
     def fNewSheet(self, vSheetName, vDescription=""):
+        # Validate name before creating
         self._fValidateSheetName(vSheetName)
+        
         self.vWorksheet = self.vWorkbook.add_worksheet(vSheetName)
         self.vRowCursor = 1
         self.vSheetList.append({'name': vSheetName, 'desc': vDescription})
@@ -95,14 +119,24 @@ class EnterpriseExcelWriter:
             self.vWorksheet.hide_gridlines(2)
 
     def fSetColumnMapping(self, dfDict):
+        """
+        Ingests data dictionary. Maps 'column_name' -> 'display_name' and 'excel_format' (if exists).
+        """
         if "pandas.core.frame.DataFrame" in str(type(dfDict)):
             if 'display_name' in dfDict.columns:
                 self.vColumnMap = pd.Series(dfDict.display_name.values, index=dfDict.column_name.values).to_dict()
+            
+            # Phase 2: Custom Number Formats
             if 'excel_format' in dfDict.columns:
+                # Only keep non-null formats
                 dfFmts = dfDict.dropna(subset=['excel_format'])
                 self.vColumnFormats = pd.Series(dfFmts.excel_format.values, index=dfFmts.column_name.values).to_dict()
 
     def fFreezePanes(self, vRow=1, vCol=0):
+        """
+        Freezes panes at the specified row and column. 
+        Example: (1, 0) freezes the top header row.
+        """
         self.vWorksheet.freeze_panes(vRow, vCol)
 
     def fSkipRows(self, vNumRows=1):
@@ -153,7 +187,12 @@ class EnterpriseExcelWriter:
             
         self.vRowCursor += 2 
 
-    def fAddText(self, vText, vFontSize=10, vFontColour=None, vBold=False, vItalic=False, vBgColour=None, vAlign='left', vTextWrap=False, vStartCol=None):
+    def fAddText(self, vText, vFontSize=10, vFontColour=None, vBold=False, vItalic=False, vBgColour=None, vAlign='left', vTextWrap=False, vStartCol=None, vMergeCols=None, vAutoHeight=False):
+        """
+        Adds free-form text. 
+        vMergeCols: If provided, forces a fixed width merge.
+        vAutoHeight: If True, attempts to calculate and set row height for wrapped text (Heuristic).
+        """
         vUseCol = vStartCol if vStartCol is not None else self.vGlobalStartCol
         vProps = {
             'font_name': 'Arial',
@@ -205,21 +244,25 @@ class EnterpriseExcelWriter:
         else:
             vRawText = vText
 
-        if vBgColour or vAlign != 'left':
+        # Determine dimensions
+        if vMergeCols:
+             vEndCol = vUseCol + vMergeCols
+             # Auto-Height Logic for forced width
+             if vAutoHeight:
+                 vHeight = self._fCalcRowHeight(vRawText, vFontSize, vMergeCols)
+                 if vHeight: self.vWorksheet.set_row(self.vRowCursor, vHeight)
+        elif vBgColour or vAlign != 'left':
             vColsNeeded = int((len(vRawText) * (vFontSize / 10.0)) / 7)
             vEndCol = min(vUseCol + vColsNeeded, vUseCol + 14)
-            
-            if vEndCol > vUseCol:
-                if vIsRichText:
-                    self.vWorksheet.merge_range(self.vRowCursor, vUseCol, self.vRowCursor, vEndCol, "", vFmt)
-                    self.vWorksheet.write_rich_string(self.vRowCursor, vUseCol, *vFragments)
-                else:
-                    self.vWorksheet.merge_range(self.vRowCursor, vUseCol, self.vRowCursor, vEndCol, vRawText, vFmt)
+        else:
+            vEndCol = vUseCol
+
+        if vEndCol > vUseCol:
+            if vIsRichText:
+                self.vWorksheet.merge_range(self.vRowCursor, vUseCol, self.vRowCursor, vEndCol, "", vFmt)
+                self.vWorksheet.write_rich_string(self.vRowCursor, vUseCol, *vFragments)
             else:
-                if vIsRichText:
-                    self.vWorksheet.write_rich_string(self.vRowCursor, vUseCol, *vFragments)
-                else:
-                    self.vWorksheet.write(self.vRowCursor, vUseCol, vRawText, vFmt)
+                self.vWorksheet.merge_range(self.vRowCursor, vUseCol, self.vRowCursor, vEndCol, vRawText, vFmt)
         else:
             if vIsRichText:
                 self.vWorksheet.write_rich_string(self.vRowCursor, vUseCol, *vFragments)
@@ -228,7 +271,12 @@ class EnterpriseExcelWriter:
             
         self.vRowCursor += 1
 
-    def fAddBanner(self, vText, vStyleProfile='Warning', vStartCol=None):
+    def fAddBanner(self, vText, vStyleProfile='Warning', vStartCol=None, vMergeCols=10, vTextWrap=False, vAutoHeight=False):
+        """
+        Adds a full-width banner. 
+        vMergeCols: Number of columns to merge across (default 10).
+        vAutoHeight: If True, calculates row height for wrapped text.
+        """
         vUseCol = vStartCol if vStartCol is not None else self.vGlobalStartCol
         vCompConfig = self.vConfig.get(vStyleProfile, {})
         vBgColour = vCompConfig.get('bg_colour', '#CC0000') 
@@ -236,18 +284,29 @@ class EnterpriseExcelWriter:
         
         vFmt = self.vWorkbook.add_format({
             'bold': True, 'font_size': 12, 'font_color': vFontColour, 
-            'bg_color': vBgColour, 'align': 'center', 'valign': 'vcenter', 'font_name': 'Arial'
+            'bg_color': vBgColour, 'align': 'center', 'valign': 'vcenter', 'font_name': 'Arial',
+            'text_wrap': vTextWrap
         })
-        self.vWorksheet.merge_range(self.vRowCursor, vUseCol, self.vRowCursor, vUseCol + 10, vText, vFmt)
+        
+        if vAutoHeight:
+            vHeight = self._fCalcRowHeight(vText, 12, vMergeCols)
+            if vHeight: self.vWorksheet.set_row(self.vRowCursor, vHeight)
+
+        self.vWorksheet.merge_range(self.vRowCursor, vUseCol, self.vRowCursor, vUseCol + vMergeCols, vText, vFmt)
         self.vRowCursor += 2
 
-    def fAddDefinitionList(self, dfDefinitions, vStartCol=None):
+    def fAddDefinitionList(self, dfDefinitions, vStartCol=None, vMergeCols=10, vTextWrap=True, vAutoHeight=False):
+        """
+        Adds a definition list.
+        vMergeCols: Number of columns to merge across (default 10).
+        vAutoHeight: If True, calculates row height for wrapped text (Default False).
+        """
         vUseCol = vStartCol if vStartCol is not None else self.vGlobalStartCol
         vGuidanceConfig = self.vConfig.get('Guidance', {})
         vBgColour = vGuidanceConfig.get('bg_colour', '#E8EDEE')
         
         vCellFmt = self.vWorkbook.add_format({
-            'text_wrap': True, 'valign': 'top', 'font_name': 'Arial', 'font_size': 9,
+            'text_wrap': vTextWrap, 'valign': 'top', 'font_name': 'Arial', 'font_size': 9,
             'bg_color': vBgColour, 'border': 0
         })
         vBoldFmt = self.vWorkbook.add_format({'bold': True, 'font_name': 'Arial', 'font_size': 9})
@@ -259,7 +318,14 @@ class EnterpriseExcelWriter:
         for row in dfPandas.itertuples(index=False):
             vTerm = str(row[0])
             vDef = str(row[1])
-            self.vWorksheet.merge_range(self.vRowCursor, vUseCol, self.vRowCursor, vUseCol + 10, "", vCellFmt)
+            vFullStr = f"{vTerm}: {vDef}"
+            
+            # Auto-Height Logic
+            if vAutoHeight:
+                vHeight = self._fCalcRowHeight(vFullStr, 9, vMergeCols)
+                if vHeight: self.vWorksheet.set_row(self.vRowCursor, vHeight)
+            
+            self.vWorksheet.merge_range(self.vRowCursor, vUseCol, self.vRowCursor, vUseCol + vMergeCols, "", vCellFmt)
             self.vWorksheet.write_rich_string(self.vRowCursor, vUseCol, vBoldFmt, vTerm + ": ", vNormalFmt, vDef, vCellFmt)
             self.vRowCursor += 1
         self.vRowCursor += 1
@@ -268,30 +334,18 @@ class EnterpriseExcelWriter:
         try: self.vWorksheet.set_background(vImagePath)
         except: pass
 
-    def fAddKpiRow(self, vKpiInput, vStartCol=None):
-        """
-        Adds a row of KPI cards.
-        vKpiInput: Dictionary {'Label': 'Value'} or a single-row DataFrame.
-        """
+    def fAddKpiRow(self, vKpiDict, vStartCol=None):
         vUseCol = vStartCol if vStartCol is not None else self.vGlobalStartCol
         
-        # Handle DataFrame Input
-        vKpiDict = {}
-        if "pandas.core.frame.DataFrame" in str(type(vKpiInput)):
-            if vKpiInput.empty:
-                return
-            # Convert first row to dictionary
-            vKpiDict = vKpiInput.iloc[0].to_dict()
-        elif isinstance(vKpiInput, dict):
-            vKpiDict = vKpiInput
-        else:
-            print("Warning: fAddKpiRow expects a Dictionary or DataFrame.")
-            return
-
+        vDict = {}
+        if "pandas.core.frame.DataFrame" in str(type(vKpiDict)):
+             if not vKpiDict.empty: vDict = vKpiDict.iloc[0].to_dict()
+        else: vDict = vKpiDict
+        
         self.vWorksheet.set_row(self.vRowCursor, 20)
         self.vWorksheet.set_row(self.vRowCursor + 1, 30)
         
-        for vLabel, vValue in vKpiDict.items():
+        for vLabel, vValue in vDict.items():
             vDisplayLabel = self.vColumnMap.get(vLabel, vLabel)
             
             vFmtProps = self.fmtKpiValueBase.copy()
@@ -689,8 +743,13 @@ class EnterpriseExcelWriter:
             return dfPandas[dfPandas[vColName].isin(self.vUsedColumns)]
         return dfPandas
 
-    def fAddDataDictionary(self, dfInput, vStartCol=None):
-        if vStartCol is None: vStartCol = self.vGlobalStartCol
+    def fAddDataDictionary(self, dfInput, vStartCol=None, vMergeCols=10, vTextWrap=True, vAutoHeight=False):
+        """
+        Adds a definition list.
+        vMergeCols: Number of columns to merge across (default 10).
+        vAutoHeight: If True, calculates row height for wrapped text (Default False).
+        """
+        vUseCol = vStartCol if vStartCol is not None else self.vGlobalStartCol
         vDictConfig = self.vConfig.get('DataDict', {})
         vHeaderBg = vDictConfig.get('header_bg_colour', self.vThemeColour)
         fmtDictHeader = self.vWorkbook.add_format({
