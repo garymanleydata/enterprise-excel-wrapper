@@ -6,7 +6,7 @@ import re
 class EnterpriseExcelDecompiler:
     """
     Reverse engineers an existing Excel file into a Python script.
-    v3.3: Precise column scanning, font detection, and flexible text defaults.
+    v3.4: Enhanced font detection and merge parameter integration for fAddText.
     """
     def __init__(self, vInputPath, vHints=None):
         self.vInputPath = vInputPath
@@ -100,7 +100,6 @@ class EnterpriseExcelDecompiler:
                 continue
 
             # B. Check for values across the scanning range (Column A onwards)
-            # We scan from column 1 up to GlobalStartCol + 1 to catch everything
             vTargetCell = None
             vMergedRange = None
             
@@ -108,7 +107,6 @@ class EnterpriseExcelDecompiler:
             for c_idx in range(1, self.vGlobalStartCol + 2):
                 vCell = vSheet.cell(row=vCurrentRow, column=c_idx)
                 
-                # Check for Merged Range Start
                 vFoundMerge = None
                 for rng in vSheet.merged_cells.ranges:
                     if rng.min_row == vCurrentRow and rng.min_col == c_idx:
@@ -149,15 +147,19 @@ class EnterpriseExcelDecompiler:
             if vColOffset != self.vGlobalStartCol:
                 vParams.append(f"vStartCol={vColOffset}")
             
+            # Detect Merge
+            if vMergedRange:
+                vParams.append("vMerge=True")
+            
             vParamStr = ", ".join(vParams)
             if vParamStr: vParamStr = ", " + vParamStr
             
             vCleanVal = self._fCleanString(vTargetCell.value)
 
-            # Preference: fAddText as the default. Use fAddTitle only for specific merge banners
+            # Heuristic Decision: Use fAddTitle for large merged banners, otherwise fAddText
             if vMergedRange and vSize and vSize >= 14:
                 self.vCodeLines.append(f"vReport.fAddTitle('{vCleanVal}'{vParamStr})")
-                # Move to the end of the merge height
+                # Move to the end of the merge height to avoid double processing
                 vHeight = vMergedRange.max_row - vMergedRange.min_row
                 vCurrentRow += vHeight
             else:
