@@ -6,7 +6,7 @@ import re
 class EnterpriseExcelDecompiler:
     """
     Reverse engineers an existing Excel file into a Python script.
-    v3.4: Enhanced font detection and merge parameter integration for fAddText.
+    v3.5: Precise merge-column calculation and fixed font name extraction.
     """
     def __init__(self, vInputPath, vHints=None):
         self.vInputPath = vInputPath
@@ -140,16 +140,18 @@ class EnterpriseExcelDecompiler:
             if vFg: vParams.append(f"vFontColour='{vFg}'")
             if vBld: vParams.append("vBold=True")
             if vSize and vSize != 10: vParams.append(f"vFontSize={vSize}")
-            if vFontName and vFontName != "Arial": vParams.append(f"vFontName='{vFontName}'")
+            if vFontName: vParams.append(f"vFontName='{vFontName}'")
             
             # Calculate column offset relative to GlobalStartCol
             vColOffset = vTargetCell.column - 1
             if vColOffset != self.vGlobalStartCol:
                 vParams.append(f"vStartCol={vColOffset}")
             
-            # Detect Merge
+            # Detect Merge Columns
             if vMergedRange:
-                vParams.append("vMerge=True")
+                vMergeCols = vMergedRange.max_col - vMergedRange.min_col + 1
+                if vMergeCols > 1:
+                    vParams.append(f"vMergeCols={vMergeCols}")
             
             vParamStr = ", ".join(vParams)
             if vParamStr: vParamStr = ", " + vParamStr
