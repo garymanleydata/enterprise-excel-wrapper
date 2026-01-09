@@ -171,12 +171,7 @@ class EnterpriseExcelWriter:
         self.vRowCursor += 2 
 
     def fAddText(self, vText, vFontSize=10, vFontColour=None, vBold=False, vItalic=False, vBgColour=None, vAlign='left', vTextWrap=False, vStartCol=None, vMergeCols=None, vAutoHeight=False, vFontName='Arial', vRow=None):
-        """
-        Adds free-form text. 
-        vRow: Explicit row index override (0-based).
-        """
         vUseCol = vStartCol if vStartCol is not None else self.vGlobalStartCol
-        # Use explicit row if provided, else use current cursor
         vUseRow = vRow if vRow is not None else self.vRowCursor
         
         vProps = {
@@ -256,17 +251,11 @@ class EnterpriseExcelWriter:
         
         # Cursor Management
         if vRow is not None:
-            # If explicit placement, ensure cursor is at least past this point to avoid overlap
             self.vRowCursor = max(self.vRowCursor, vUseRow + 1)
         else:
             self.vRowCursor += 1
 
     def fAddBanner(self, vText, vStyleProfile='Warning', vStartCol=None, vMergeCols=10, vTextWrap=False, vAutoHeight=False):
-        """
-        Adds a full-width banner. 
-        vMergeCols: Number of columns to merge across (default 10).
-        vAutoHeight: If True, calculates row height for wrapped text.
-        """
         vUseCol = vStartCol if vStartCol is not None else self.vGlobalStartCol
         vCompConfig = self.vConfig.get(vStyleProfile, {})
         vBgColour = vCompConfig.get('bg_colour', '#CC0000') 
@@ -286,11 +275,6 @@ class EnterpriseExcelWriter:
         self.vRowCursor += 2
 
     def fAddDefinitionList(self, dfDefinitions, vStartCol=None, vMergeCols=10, vTextWrap=True, vAutoHeight=False):
-        """
-        Adds a definition list.
-        vMergeCols: Number of columns to merge across (default 10).
-        vAutoHeight: If True, calculates row height for wrapped text (Default False).
-        """
         vUseCol = vStartCol if vStartCol is not None else self.vGlobalStartCol
         vGuidanceConfig = self.vConfig.get('Guidance', {})
         vBgColour = vGuidanceConfig.get('bg_colour', '#E8EDEE')
@@ -356,7 +340,7 @@ class EnterpriseExcelWriter:
     def fWriteDataframe(self, dfInput, vStartCol=None, vAddTotals=False, vAutoFilter=False, vStyleOverrides=None, vColAlignments=None):
         """
         Writes a Pandas DataFrame to the sheet with Validation and Auto-Formatting.
-        Supports vStyleOverrides dictionary: {'header_bg': '#Color', 'font_size': 10, 'border_color': '#Color'}
+        Supports vStyleOverrides dictionary: {'header_bg': '#Color', 'font_size': 10, 'border_color': '#Color', 'font_name': 'Arial'}
         Supports vColAlignments dictionary: {'column_name': 'center'}
         """
         if vStartCol is None:
@@ -380,23 +364,35 @@ class EnterpriseExcelWriter:
         vColumns = list(dfInput.columns)
         self.vUsedColumns.update(vColumns)
         
+        # --- CONFIG & STYLE RESOLUTION ---
+        vDFConfig = self.vConfig.get('DataFrame', {})
         vStyles = vStyleOverrides or {}
-        vHeaderBg = vStyles.get('header_bg', self.vThemeColour)
-        vHeaderFont = vStyles.get('header_font', 'white')
-        vBodySize = vStyles.get('font_size', 10)
-        vBorderColor = vStyles.get('border_color', '#000000')
+        
+        # Helper to get config with fallbacks (User Key -> Legacy Key -> Default)
+        def fGetCfg(vUserKey, vLegacyKey, vDefault):
+             val = vDFConfig.get(vUserKey)
+             if val is None: val = vDFConfig.get(vLegacyKey)
+             if val is None: val = vDefault
+             return val
+        
+        # Check overrides, then user-friendly keys, then legacy database keys, then default
+        vHeaderBg = vStyles.get('header_bg', fGetCfg('header_bg', 'header_bg_colour', self.vThemeColour))
+        vHeaderFont = vStyles.get('header_font', fGetCfg('header_font', 'header_font_colour', 'white'))
+        vBodySize = int(vStyles.get('font_size', fGetCfg('font_size', 'header_font_size', 10)))
+        vBorderColor = vStyles.get('border_color', fGetCfg('border_color', 'border_colour', '#000000'))
+        vFontName = vStyles.get('font_name', fGetCfg('font_name', 'font_name', 'Arial'))
         
         vColAlignments = vColAlignments or {}
 
         fmtHeaderCustom = self.vWorkbook.add_format({
             'bold': True, 'font_color': vHeaderFont, 'bg_color': vHeaderBg,
             'border': 1, 'border_color': vBorderColor, 
-            'align': 'center', 'valign': 'vcenter', 'font_name': 'Arial', 'font_size': vBodySize
+            'align': 'center', 'valign': 'vcenter', 'font_name': vFontName, 'font_size': vBodySize
         })
         
         fmtTextCustom = self.vWorkbook.add_format({
             'border': 1, 'border_color': vBorderColor, 
-            'valign': 'vcenter', 'font_name': 'Arial', 'font_size': vBodySize
+            'valign': 'vcenter', 'font_name': vFontName, 'font_size': vBodySize
         })
 
         vData = dfInput.values.tolist()
@@ -428,7 +424,7 @@ class EnterpriseExcelWriter:
             
             vProps = {
                 'border': 1, 'border_color': vBorderColor, 
-                'valign': 'vcenter', 'font_name': 'Arial', 'font_size': vBodySize
+                'valign': 'vcenter', 'font_name': vFontName, 'font_size': vBodySize
             }
             if sNumFmt: vProps['num_format'] = sNumFmt
             if sAlign: vProps['align'] = sAlign
@@ -456,7 +452,7 @@ class EnterpriseExcelWriter:
                     vFmt = fGetFmt(vFmtStr, vAlign)
                 elif isinstance(vVal, str) and re.match(r'^(http|https|ftp|mailto):', vVal):
                     vLinkProps = {
-                        'font_color': 'blue', 'underline': 1, 'font_name': 'Arial', 'font_size': 10,
+                        'font_color': 'blue', 'underline': 1, 'font_name': vFontName, 'font_size': 10,
                         'border': 1, 'valign': 'vcenter'
                     }
                     if vAlign: vLinkProps['align'] = vAlign
@@ -471,7 +467,7 @@ class EnterpriseExcelWriter:
         if vAddTotals:
             fmtTotalCustom = self.vWorkbook.add_format({
                 'bold': True, 'bg_color': '#E0E0E0', 'border': 1, 'border_color': vBorderColor,
-                'num_format': '#,##0', 'font_name': 'Arial', 'font_size': vBodySize
+                'num_format': '#,##0', 'font_name': vFontName, 'font_size': vBodySize
             })
             self.vWorksheet.write(self.vRowCursor, vStartCol, "Total", fmtTotalCustom)
             
@@ -496,7 +492,7 @@ class EnterpriseExcelWriter:
                         
                     vColTotalFmt = self.vWorkbook.add_format({
                         'bold': True, 'bg_color': '#E0E0E0', 'border': 1, 'border_color': vBorderColor,
-                        'font_name': 'Arial', 'font_size': vBodySize,
+                        'font_name': vFontName, 'font_size': vBodySize,
                         'num_format': vFmtStr
                     })
 
