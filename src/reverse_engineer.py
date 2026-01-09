@@ -6,7 +6,7 @@ import re
 class EnterpriseExcelDecompiler:
     """
     Reverse engineers an existing Excel file into a Python script.
-    v3.2: High-fidelity scanning with improved newline handling and precise component mapping.
+    v3.3: Precise column scanning, font detection, and flexible text defaults.
     """
     def __init__(self, vInputPath, vHints=None):
         self.vInputPath = vInputPath
@@ -63,7 +63,7 @@ class EnterpriseExcelDecompiler:
         
         # 1. Capture Column Widths
         vWidths = {}
-        for i in range(1, 15): # Check first 14 columns
+        for i in range(1, 20): # Check first 20 columns
             vColLet = get_column_letter(i)
             if vColLet in vSheet.column_dimensions:
                 w = vSheet.column_dimensions[vColLet].width
@@ -85,7 +85,7 @@ class EnterpriseExcelDecompiler:
         while vCurrentRow <= vMaxRow:
             vRowKey = str(vCurrentRow)
             
-            # A. Process User-Defined Hints (e.g., Dataframes)
+            # A. Process User-Defined Hints (Dataframes)
             if vRowKey in vSheetHints:
                 if vSkipCounter > 0:
                     self.vCodeLines.append(f"vReport.fSkipRows({vSkipCounter})")
@@ -99,52 +99,67 @@ class EnterpriseExcelDecompiler:
                 vCurrentRow += vHint.get('skip_rows', 1)
                 continue
 
-            # B. Check for values or Merges in the global start column
-            vTargetCol = self.vGlobalStartCol + 1
-            vCell = vSheet.cell(row=vCurrentRow, column=vTargetCol)
-            
+            # B. Check for values across the scanning range (Column A onwards)
+            # We scan from column 1 up to GlobalStartCol + 1 to catch everything
+            vTargetCell = None
             vMergedRange = None
-            for rng in vSheet.merged_cells.ranges:
-                if rng.min_row == vCurrentRow and rng.min_col == vTargetCol:
-                    vMergedRange = rng
-                    break
             
-            vHasValue = vCell.value is not None
+            # Scan columns in this row to find the first content
+            for c_idx in range(1, self.vGlobalStartCol + 2):
+                vCell = vSheet.cell(row=vCurrentRow, column=c_idx)
+                
+                # Check for Merged Range Start
+                vFoundMerge = None
+                for rng in vSheet.merged_cells.ranges:
+                    if rng.min_row == vCurrentRow and rng.min_col == c_idx:
+                        vFoundMerge = rng
+                        break
+                
+                if vCell.value is not None or vFoundMerge:
+                    vTargetCell = vCell
+                    vMergedRange = vFoundMerge
+                    break
 
-            if not vHasValue and not vMergedRange:
+            if not vTargetCell:
                 vSkipCounter += 1
                 vCurrentRow += 1
                 continue
             
-            # If we hit content, flush skip buffer
+            # Flush skip buffer
             if vSkipCounter > 0:
                 self.vCodeLines.append(f"vReport.fSkipRows({vSkipCounter})")
                 vSkipCounter = 0
 
             # Style Extraction
-            vBg = self._fGetHexColor(vCell.fill.start_color)
-            vFg = self._fGetHexColor(vCell.font.color)
-            vBld = vCell.font.b
-            vSize = vCell.font.size
+            vBg = self._fGetHexColor(vTargetCell.fill.start_color)
+            vFg = self._fGetHexColor(vTargetCell.font.color)
+            vBld = vTargetCell.font.b
+            vSize = vTargetCell.font.size
+            vFontName = vTargetCell.font.name
             
             vParams = []
             if vBg: vParams.append(f"vBgColour='{vBg}'")
             if vFg: vParams.append(f"vFontColour='{vFg}'")
             if vBld: vParams.append("vBold=True")
             if vSize and vSize != 10: vParams.append(f"vFontSize={vSize}")
+            if vFontName and vFontName != "Arial": vParams.append(f"vFontName='{vFontName}'")
+            
+            # Calculate column offset relative to GlobalStartCol
+            vColOffset = vTargetCell.column - 1
+            if vColOffset != self.vGlobalStartCol:
+                vParams.append(f"vStartCol={vColOffset}")
             
             vParamStr = ", ".join(vParams)
             if vParamStr: vParamStr = ", " + vParamStr
             
-            vCleanVal = self._fCleanString(vCell.value)
+            vCleanVal = self._fCleanString(vTargetCell.value)
 
-            # Determine component type
-            if vMergedRange or (vSize and vSize >= 14):
+            # Preference: fAddText as the default. Use fAddTitle only for specific merge banners
+            if vMergedRange and vSize and vSize >= 14:
                 self.vCodeLines.append(f"vReport.fAddTitle('{vCleanVal}'{vParamStr})")
-                if vMergedRange:
-                    # Move to the end of the merge height to avoid double-processing
-                    vHeight = vMergedRange.max_row - vMergedRange.min_row
-                    vCurrentRow += vHeight
+                # Move to the end of the merge height
+                vHeight = vMergedRange.max_row - vMergedRange.min_row
+                vCurrentRow += vHeight
             else:
                 self.vCodeLines.append(f"vReport.fAddText('{vCleanVal}'{vParamStr})")
 
@@ -158,14 +173,11 @@ class EnterpriseExcelDecompiler:
         vFullCode += "# 2. Report Generation\n"
         vFullCode += f"vReport = EnterpriseExcelWriter('Recreated_Report.xlsx', vConfig=vConfig, vGlobalStartCol={self.vGlobalStartCol})\n"
         
-        # Clear previous code lines to avoid duplication if called twice
         self.vCodeLines = []
-        
         for name in self.vWorkbook.sheetnames:
             if name in self.vIgnoredSheets: continue
             self.fScanSheet(self.vWorkbook[name], name)
             
-        # Assemble the scanned code lines
         vFullCode += "\n".join(self.vCodeLines)
         
         if self.vHints.get('GenerateTOC', True):
