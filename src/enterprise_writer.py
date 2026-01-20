@@ -134,6 +134,10 @@ class EnterpriseExcelWriter:
                 self.vColumnFormats = pd.Series(dfFmts.excel_format.values, index=dfFmts.column_name.values).to_dict()
 
     def fFreezePanes(self, vRow=1, vCol=0):
+        """
+        Freezes panes at the specified row and column. 
+        Example: (1, 0) freezes the top header row.
+        """
         self.vWorksheet.freeze_panes(vRow, vCol)
 
     def fSkipRows(self, vNumRows=1):
@@ -185,21 +189,42 @@ class EnterpriseExcelWriter:
         self.vRowCursor += 2 
 
     def fAddText(self, vText, vFontSize=10, vFontColour=None, vBold=False, vItalic=False, vBgColour=None, vAlign='left', vTextWrap=False, vStartCol=None, vMergeCols=None, vAutoHeight=False, vFontName='Arial', vRow=None):
+        """
+        Adds free-form text. 
+        vRow: Explicit row index override (0-based).
+        """
         vUseCol = vStartCol if vStartCol is not None else self.vGlobalStartCol
+        # Use explicit row if provided, else use current cursor
         vUseRow = vRow if vRow is not None else self.vRowCursor
-        vProps = {'font_name': vFontName, 'font_size': vFontSize, 'bold': vBold, 'italic': vItalic, 'valign': 'vcenter', 'align': vAlign, 'text_wrap': vTextWrap}
+        
+        vProps = {
+            'font_name': vFontName,
+            'font_size': vFontSize,
+            'bold': vBold,
+            'italic': vItalic,
+            'valign': 'vcenter',
+            'align': vAlign,
+            'text_wrap': vTextWrap
+        }
+        
         if vFontColour: vProps['font_color'] = vFontColour
+        
         if vBgColour:
             vProps['bg_color'] = vBgColour
             vProps['border'] = 1
+            
         vFmt = self.vWorkbook.add_format(vProps)
+        
         vIsRichText = isinstance(vText, list)
         vRawText = ""
         vFragments = []
+        
         if vIsRichText:
             vBaseProps = vProps.copy()
-            for k in ['bg_color', 'border', 'align', 'valign', 'text_wrap']: vBaseProps.pop(k, None)
+            for k in ['bg_color', 'border', 'align', 'valign', 'text_wrap']:
+                vBaseProps.pop(k, None)
             vBaseFontFmt = self.vWorkbook.add_format(vBaseProps)
+
             for vSeg in vText:
                 if isinstance(vSeg, dict):
                     vSegText = vSeg.get('text', '')
@@ -210,7 +235,8 @@ class EnterpriseExcelWriter:
                     if 'colour' in vSeg: vSegProps['font_color'] = vSeg['colour']
                     if 'font_color' in vSeg: vSegProps['font_color'] = vSeg['font_color']
                     if 'size' in vSeg: vSegProps['font_size'] = vSeg['size']
-                    for k in ['bg_color', 'border', 'align', 'valign', 'text_wrap']: vSegProps.pop(k, None)
+                    for k in ['bg_color', 'border', 'align', 'valign', 'text_wrap']:
+                        vSegProps.pop(k, None)
                     vFragments.append(self.vWorkbook.add_format(vSegProps))
                     vFragments.append(vSegText)
                 else:
@@ -220,8 +246,11 @@ class EnterpriseExcelWriter:
             vFragments.append(vFmt)
         else:
             vRawText = vText
+
+        # Determine dimensions
         if vMergeCols:
              vEndCol = vUseCol + vMergeCols
+             # Auto-Height Logic for forced width
              if vAutoHeight:
                  vHeight = self._fCalcRowHeight(vRawText, vFontSize, vMergeCols)
                  if vHeight: self.vWorksheet.set_row(vUseRow, vHeight)
@@ -230,6 +259,7 @@ class EnterpriseExcelWriter:
             vEndCol = min(vUseCol + vColsNeeded, vUseCol + 14)
         else:
             vEndCol = vUseCol
+
         if vEndCol > vUseCol:
             if vIsRichText:
                 self.vWorksheet.merge_range(vUseRow, vUseCol, vUseRow, vEndCol, "", vFmt)
@@ -241,69 +271,100 @@ class EnterpriseExcelWriter:
                 self.vWorksheet.write_rich_string(vUseRow, vUseCol, *vFragments)
             else:
                 self.vWorksheet.write(vUseRow, vUseCol, vRawText, vFmt)
+        
+        # Cursor Management
         if vRow is not None:
             self.vRowCursor = max(self.vRowCursor, vUseRow + 1)
         else:
             self.vRowCursor += 1
 
     def fAddBanner(self, vText, vStyleProfile='Warning', vStartCol=None, vMergeCols=10, vTextWrap=False, vAutoHeight=False):
+        """
+        Adds a full-width banner. 
+        vMergeCols: Number of columns to merge across (default 10).
+        vAutoHeight: If True, calculates row height for wrapped text.
+        """
         vUseCol = vStartCol if vStartCol is not None else self.vGlobalStartCol
         vCompConfig = self.vConfig.get(vStyleProfile, {})
         vBgColour = vCompConfig.get('bg_colour', '#CC0000') 
         vFontColour = vCompConfig.get('font_colour', '#FFFFFF')
+        
         vFmt = self.vWorkbook.add_format({
             'bold': True, 'font_size': 12, 'font_color': vFontColour, 
             'bg_color': vBgColour, 'align': 'center', 'valign': 'vcenter', 'font_name': 'Arial',
             'text_wrap': vTextWrap
         })
+        
         if vAutoHeight:
             vHeight = self._fCalcRowHeight(vText, 12, vMergeCols)
             if vHeight: self.vWorksheet.set_row(self.vRowCursor, vHeight)
+
         self.vWorksheet.merge_range(self.vRowCursor, vUseCol, self.vRowCursor, vUseCol + vMergeCols, vText, vFmt)
         self.vRowCursor += 2
 
     def fAddDefinitionList(self, dfDefinitions, vStartCol=None, vMergeCols=10, vTextWrap=True, vAutoHeight=False):
+        """
+        Adds a definition list.
+        vMergeCols: Number of columns to merge across (default 10).
+        vAutoHeight: If True, calculates row height for wrapped text (Default False).
+        """
         vUseCol = vStartCol if vStartCol is not None else self.vGlobalStartCol
         vGuidanceConfig = self.vConfig.get('Guidance', {})
         vBgColour = vGuidanceConfig.get('bg_colour', '#E8EDEE')
+        
         vCellFmt = self.vWorkbook.add_format({
             'text_wrap': vTextWrap, 'valign': 'top', 'font_name': 'Arial', 'font_size': 9,
             'bg_color': vBgColour, 'border': 0
         })
         vBoldFmt = self.vWorkbook.add_format({'bold': True, 'font_name': 'Arial', 'font_size': 9})
         vNormalFmt = self.vWorkbook.add_format({'font_name': 'Arial', 'font_size': 9, 'italic': True})
+        
         if "pandas.core.frame.DataFrame" in str(type(dfDefinitions)): dfPandas = dfDefinitions
         else: dfPandas = dfDefinitions
+        
         for row in dfPandas.itertuples(index=False):
             vTerm = str(row[0])
             vDef = str(row[1])
             vFullStr = f"{vTerm}: {vDef}"
+            
             if vAutoHeight:
                 vHeight = self._fCalcRowHeight(vFullStr, 9, vMergeCols)
                 if vHeight: self.vWorksheet.set_row(self.vRowCursor, vHeight)
+            
             self.vWorksheet.merge_range(self.vRowCursor, vUseCol, self.vRowCursor, vUseCol + vMergeCols, "", vCellFmt)
             self.vWorksheet.write_rich_string(self.vRowCursor, vUseCol, vBoldFmt, vTerm + ": ", vNormalFmt, vDef, vCellFmt)
             self.vRowCursor += 1
         self.vRowCursor += 1
 
+    def fAddWatermark(self, vImagePath):
+        try: self.vWorksheet.set_background(vImagePath)
+        except: pass
+
     def fAddKpiRow(self, vKpiDict, vStartCol=None):
         vUseCol = vStartCol if vStartCol is not None else self.vGlobalStartCol
+        
         vDict = {}
         if "pandas.core.frame.DataFrame" in str(type(vKpiDict)):
              if not vKpiDict.empty: vDict = vKpiDict.iloc[0].to_dict()
         else: vDict = vKpiDict
+        
         self.vWorksheet.set_row(self.vRowCursor, 20)
         self.vWorksheet.set_row(self.vRowCursor + 1, 30)
+        
         for vLabel, vValue in vDict.items():
             vDisplayLabel = self.vColumnMap.get(vLabel, vLabel)
+            
             vFmtProps = self.fmtKpiValueBase.copy()
             vCustomFmt = self.vColumnFormats.get(vLabel)
-            if vCustomFmt: vFmtProps['num_format'] = vCustomFmt
+            if vCustomFmt:
+                vFmtProps['num_format'] = vCustomFmt
             elif isinstance(vValue, (int, float)):
                 if any(x in vLabel.lower() for x in ["price", "cost", "revenue"]): vFmtProps['num_format'] = '$#,##0.00'
                 elif any(x in vLabel.lower() for x in ["percent", "rate", "efficiency"]): vFmtProps['num_format'] = '0.0%'
                 else: vFmtProps['num_format'] = '#,##0'
+            
             vSpecificFmt = self.vWorkbook.add_format(vFmtProps)
+
             self.vWorksheet.merge_range(self.vRowCursor, vUseCol, self.vRowCursor, vUseCol + 1, vDisplayLabel, self.fmtKpiLabel)
             self.vWorksheet.merge_range(self.vRowCursor + 1, vUseCol, self.vRowCursor + 1, vUseCol + 1, vValue, vSpecificFmt)
             vUseCol += 3 
@@ -331,6 +392,10 @@ class EnterpriseExcelWriter:
     def fWriteDataframe(self, dfInput, vStartCol=None, vAddTotals=False, vAutoFilter=False, vStyleOverrides=None, vColAlignments=None, vColStyleOverrides=None, vCellStyleMap=None):
         """
         Writes a Pandas DataFrame to the sheet with Validation and Auto-Formatting.
+        Supports vStyleOverrides dictionary: {'header_bg': '#Color', 'font_size': 10, 'border_color': '#Color', 'font_name': 'Arial', 'body_bg': '#Color', 'header_wrap': True, 'header_height': 40}
+        Supports vColAlignments dictionary: {'column_name': 'center'}
+        Supports vColStyleOverrides: Dict of {ColumnIndex (int): {style_props}}. Supports negative indexing.
+        Supports vCellStyleMap: Dict of {(RowIdx, ColName): {style_props}}. Logic-based cell highlighting.
         """
         if vStartCol is None:
             vStartCol = self.vGlobalStartCol
@@ -353,12 +418,14 @@ class EnterpriseExcelWriter:
         vColumns = list(dfInput.columns)
         self.vUsedColumns.update(vColumns)
         
+        # --- CONFIG & STYLE RESOLUTION ---
         vDFConfig = self.vConfig.get('DataFrame', {})
         vStyles = vStyleOverrides or {}
         vColAlignments = vColAlignments or {}
         vColStyleOverrides = vColStyleOverrides or {}
         vCellStyleMap = vCellStyleMap or {}
         
+        # Helper to get config with fallbacks (User Key -> Legacy Key -> Default)
         def fGetCfg(vUserKey, vLegacyKey, vDefault):
              val = vDFConfig.get(vUserKey)
              if val is None: val = vDFConfig.get(vLegacyKey)
@@ -371,11 +438,15 @@ class EnterpriseExcelWriter:
         vBorderColor = vStyles.get('border_color', fGetCfg('border_color', 'border_colour', '#000000'))
         vFontName = vStyles.get('font_name', fGetCfg('font_name', 'font_name', 'Arial'))
         vBodyBg = vStyles.get('body_bg', fGetCfg('body_bg', 'body_bg_colour', None))
+        
+        vHeaderWrap = vStyles.get('header_wrap', False)
+        vHeaderHeight = vStyles.get('header_height', 20)
 
         vBaseHeaderProps = {
             'bold': True, 'font_color': vHeaderFont, 'bg_color': vHeaderBg,
             'border': 1, 'border_color': vBorderColor, 
-            'align': 'center', 'valign': 'vcenter', 'font_name': vFontName, 'font_size': vBodySize
+            'align': 'center', 'valign': 'vcenter', 'font_name': vFontName, 'font_size': vBodySize,
+            'text_wrap': vHeaderWrap
         }
         
         vBaseBodyProps = {
@@ -395,37 +466,59 @@ class EnterpriseExcelWriter:
 
         vDateColIndices = [i for i, col in enumerate(dfInput.columns) if pd.api.types.is_datetime64_any_dtype(dfInput[col])]
         
+        # --- Helper: Resolve Column Specific Style ---
         def fGetColStyle(iColIdx, isHeader=False):
+            # 1. Start with Base
             props = vBaseHeaderProps.copy() if isHeader else vBaseBodyProps.copy()
+            
+            # 2. Check Overrides (Positive and Negative Index)
             vOverride = vColStyleOverrides.get(iColIdx, {})
             vNegIdx = iColIdx - len(vColumns)
             vOverrideNeg = vColStyleOverrides.get(vNegIdx, {})
+            
+            # Merge (Negative takes priority if both exist, arbitrarily)
             vMergedOverride = {**vOverride, **vOverrideNeg}
+            
+            # Apply overrides to properties
             if vMergedOverride:
+                # Map specific keys if needed, or just merge valid xlsxwriter properties
                 for k, v in vMergedOverride.items():
+                    # Logic to prevent body styles affecting headers
                     if k == 'body_bg':
                         if not isHeader: k = 'bg_color' 
-                        else: continue 
-                    elif k == 'header_bg': 
+                        else: continue # Skip if header
+                    elif k == 'header_bg': # Bonus: Support header specific override
                         if isHeader: k = 'bg_color'
-                        else: continue 
+                        else: continue # Skip if body
+                        
+                    # Map custom/UK keys to xlsxwriter standard
                     if k == 'bg_colour': k = 'bg_color'
                     elif k == 'font_colour': k = 'font_color'
                     elif k == 'border_colour': k = 'border_color'
+                    
                     props[k] = v
+            
+            # 3. Add Alignment (Body only usually, but allowed in header)
             vColName = vColumns[iColIdx]
             vAlign = vColAlignments.get(vColName)
             if vAlign: props['align'] = vAlign
+            
+            # 4. Enforce Border if not explicitly removed by user
             if 'border' not in vMergedOverride and 'border' not in props:
                 props['border'] = 1
                 props['border_color'] = vBorderColor
+                
             return props
 
-        self.vWorksheet.set_row(self.vRowCursor, 20) 
+        # --- WRITE HEADERS ---
+        self.vWorksheet.set_row(self.vRowCursor, vHeaderHeight) 
         for vIdx, vColName in enumerate(vColumns):
             vDisplayName = self.vColumnMap.get(vColName, vColName)
+            
+            # Resolve Style for this specific header column
             vProps = fGetColStyle(vIdx, isHeader=True)
             vFmt = self.vWorkbook.add_format(vProps)
+            
             self.vWorksheet.write(self.vRowCursor, vStartCol + vIdx, vDisplayName, vFmt)
             vMaxLen = dfInput[vColName].astype(str).map(len).max() if not dfInput.empty else 0
             self.vWorksheet.set_column(vStartCol + vIdx, vStartCol + vIdx, min(max(len(vDisplayName), vMaxLen) + 2, 50))
@@ -435,9 +528,14 @@ class EnterpriseExcelWriter:
 
         vCurrentRow = self.vRowCursor + 1
         
+        # --- WRITE BODY ---
+        
+        # Format Cache (Tuple of Props FrozenSet -> Format Object)
         vFmtCache = {}
+        
         def fGetCachedFmt(vPropsDict, sNumFmt=None):
             if sNumFmt: vPropsDict['num_format'] = sNumFmt
+            # Make hashable key
             vKey = frozenset(vPropsDict.items())
             if vKey in vFmtCache: return vFmtCache[vKey]
             vObj = self.vWorkbook.add_format(vPropsDict)
@@ -447,8 +545,12 @@ class EnterpriseExcelWriter:
         for vRowIdx, vRowData in enumerate(vData):
             for vColIdx, vVal in enumerate(vRowData):
                 vColName = vColumns[vColIdx]
+                
+                # 1. Get Base Column Props (Borders, BgColor, Font, Align)
+                #    Important: We take a copy so we don't mutate the base for subsequent cells
                 vProps = fGetColStyle(vColIdx, isHeader=False).copy()
                 
+                # 2. Apply Cell-Specific Overrides (The "Pre-Calculated Mask" Logic)
                 vCellOverride = vCellStyleMap.get((vRowIdx, vColName))
                 if vCellOverride:
                      for k, v in vCellOverride.items():
@@ -457,19 +559,28 @@ class EnterpriseExcelWriter:
                         elif k == 'border_colour': k = 'border_color'
                         vProps[k] = v
                 
+                # 3. Determine Number Format
                 vNumFmt = None
+                
                 vCustomFmtStr = self.vColumnFormats.get(vColName)
-                if vCustomFmtStr: vNumFmt = vCustomFmtStr
-                elif vColIdx in vDateColIndices: vNumFmt = self.vDateFormatStr
+                if vCustomFmtStr:
+                    vNumFmt = vCustomFmtStr
+                elif vColIdx in vDateColIndices:
+                    vNumFmt = self.vDateFormatStr
                 elif isinstance(vVal, (int, float)):
                     if any(x in vColName for x in ["price", "cost", "revenue"]): vNumFmt = '$#,##0.00'
                     elif any(x in vColName for x in ["percent", "rate"]): vNumFmt = '0.0%'
                     else: vNumFmt = '#,##0'
                 
+                # 4. Create/Get Format
                 vFmt = fGetCachedFmt(vProps, vNumFmt)
                 
+                # 5. Write
                 if isinstance(vVal, str) and re.match(r'^(http|https|ftp|mailto):', vVal):
-                    self.vWorksheet.write_url(vCurrentRow + vRowIdx, vStartCol + vColIdx, vVal, self.fmtLink)
+                    # We reuse the link format but might lose custom borders here unless updated globally
+                    # For now, keep standard link format to ensure it looks clickable
+                    vFmt = self.fmtLink 
+                    self.vWorksheet.write_url(vCurrentRow + vRowIdx, vStartCol + vColIdx, vVal, vFmt)
                     continue 
                     
                 self.vWorksheet.write(vCurrentRow + vRowIdx, vStartCol + vColIdx, vVal, vFmt)
@@ -482,31 +593,39 @@ class EnterpriseExcelWriter:
                 'num_format': '#,##0', 'font_name': vFontName, 'font_size': vBodySize
             })
             self.vWorksheet.write(self.vRowCursor, vStartCol, "Total", fmtTotalCustom)
+            
             for vIdx, vColName in enumerate(vColumns):
                 if vIdx == 0: continue 
+                
                 if pd.api.types.is_numeric_dtype(dfInput[vColName]):
                     is_percent_col = False
                     if any(x in vColName.lower() for x in ["percent", "rate", "efficiency", "score"]): is_percent_col = True
                     vCustomFmt = self.vColumnFormats.get(vColName)
                     if vCustomFmt and '%' in vCustomFmt: is_percent_col = True
+                    
                     if is_percent_col:
                         self.vWorksheet.write(self.vRowCursor, vStartCol + vIdx, "", fmtTotalCustom)
                         continue
+
                     vPySum = dfInput[vColName].sum()
                     vFmtStr = '#,##0' 
                     if vCustomFmt: vFmtStr = vCustomFmt
                     elif any(x in vColName.lower() for x in ["price", "cost", "revenue"]): vFmtStr = '$#,##0.00'
                     elif any(x in vColName.lower() for x in ["weight", "dist", "km", "miles"]): vFmtStr = '#,##0.0'
+                        
                     vColTotalFmt = self.vWorkbook.add_format({
                         'bold': True, 'bg_color': '#E0E0E0', 'border': 1, 'border_color': vBorderColor,
                         'font_name': vFontName, 'font_size': vBodySize,
                         'num_format': vFmtStr
                     })
+
                     vColLetter = xlsxwriter.utility.xl_col_to_name(vStartCol + vIdx)
                     vRange = f"{vColLetter}{vCurrentRow+1}:{vColLetter}{vCurrentRow+len(dfInput)}"
+                    
                     self.vWorksheet.write_formula(self.vRowCursor, vStartCol + vIdx, f"=SUM({vRange})", vColTotalFmt, value=vPySum)
                 else:
                     self.vWorksheet.write(self.vRowCursor, vStartCol + vIdx, "", fmtTotalCustom)
+            
             self.vRowCursor += 2
         else: self.vRowCursor += 1
 
